@@ -1,29 +1,27 @@
-use anyhow::{anyhow, Error};
+use anyhow::{anyhow, Error, Result};
 use async_std::task;
-use fehler::throws;
 use identity::Keypair;
 use libp2p::{
     gossipsub::{Gossipsub, GossipsubConfig, IdentTopic, MessageAuthenticity},
-    identity,
-    PeerId, Swarm,
+    identity, PeerId, Swarm,
 };
 
-mod key;
 #[cfg(feature = "gui")]
 mod gui;
+mod key;
 
-#[throws]
-fn main() {
+fn main() -> Result<()> {
     env_logger::init();
 
     let mut swarm = setup_p2p()?;
     p2p_addrs(&mut swarm)?;
 
-    task::block_on(run(&mut swarm));
+    task::block_on(run(&mut swarm))?;
+
+    Ok(())
 }
 
-#[throws]
-fn setup_p2p() -> Swarm<Gossipsub> {
+fn setup_p2p() -> Result<Swarm<Gossipsub>> {
     let id_keys = Keypair::generate_ed25519();
     let peer_id = PeerId::from(id_keys.public());
     let transport = libp2p::build_tcp_ws_pnet_noise_mplex_yamux(id_keys.clone(), key::key())?;
@@ -35,22 +33,24 @@ fn setup_p2p() -> Swarm<Gossipsub> {
     gossipsub
         .subscribe(&topic)
         .map_err(|e| anyhow!("{:?}", e))?;
-    Swarm::new(transport, gossipsub, peer_id)
+    let swarm = Swarm::new(transport, gossipsub, peer_id);
+
+    Ok(swarm)
 }
 
-#[throws]
-fn p2p_addrs(swarm: &mut Swarm<Gossipsub>) {
+fn p2p_addrs(swarm: &mut Swarm<Gossipsub>) -> Result<()> {
     if cfg!(feature = "gui") {
         Swarm::listen_on(swarm, "/ip4/0.0.0.0/tcp/0".parse()?)?;
         Swarm::dial_addr(swarm, "/dns/yuyuwai.net/tcp/8000".parse()?)?;
     } else {
         Swarm::listen_on(swarm, "/ip4/0.0.0.0/tcp/8000".parse()?)?;
     }
+
+    Ok(())
 }
 
 #[cfg(not(feature = "gui"))]
-mod rdv {
-pub async fn run<T>(swarm: &mut T)
+pub async fn run<T>(swarm: &mut T) -> Result<()>
 where
     T: Stream + Unpin,
     <T as Stream>::Item: Debug,
@@ -60,7 +60,6 @@ where
             println!("{:?}", event);
         }
     }
-}
 }
 
 #[cfg(feature = "gui")]
