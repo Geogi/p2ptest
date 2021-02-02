@@ -9,13 +9,15 @@ gui = ["druid"]
 default = ["gui"]
 
 [dependencies]
-async-std = "1.9.0"
 anyhow = "1.0.38"
-crossbeam = "0.8.0"
 env_logger = "0.8.2"
 futures = "0.3.12"
 libp2p = "0.34.0"
 log = "0.4.14"
+
+[dependencies.async-std]
+version = "1.9.0"
+features = ["unstable"]
 
 [dependencies.druid]
 version = "0.7.0"

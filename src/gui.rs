@@ -1,13 +1,17 @@
 use anyhow::Result;
-use crossbeam::channel::{unbounded, Receiver, Sender};
+use async_std::{
+    channel::{unbounded, Receiver, Sender},
+    stream::StreamExt,
+    task,
+};
 use druid::{
     widget::{Align, Button, Flex, Label, TextBox},
     AppDelegate, AppLauncher, Command, Data, DelegateCtx, Env, ExtEventSink, Handled, Lens,
     Selector, Target, Widget, WidgetExt, WindowDesc, WindowId,
 };
-use futures::{Stream, StreamExt, ready};
-use log::info;
-use std::{fmt::Debug, task::{Context, Poll}, thread::spawn};
+use futures::Stream;
+use log::{error, info};
+use std::fmt::Debug;
 
 #[derive(Debug)]
 enum GuiEvent {
@@ -55,8 +59,10 @@ impl AppDelegate<HelloState> for Delegate {
             data.name = name.clone();
             Handled::Yes
         } else if let Some(()) = cmd.get(RENAMED) {
-            // need a clean way to handle errors (env? state?)
-            self.ev_snd.send(GuiEvent::Rename(data.new_name.clone())).unwrap();
+            let future = self.ev_snd.send(GuiEvent::Rename(data.new_name.clone()));
+            if let Err(e) = task::block_on(future) {
+                error!("{}", e);
+            }
             Handled::Yes
         } else {
             Handled::No
@@ -70,29 +76,33 @@ impl AppDelegate<HelloState> for Delegate {
         _env: &Env,
         _ctx: &mut DelegateCtx,
     ) {
-        self.ev_snd.send(GuiEvent::Exit).unwrap();
+        if let Err(e) = task::block_on(self.ev_snd.send(GuiEvent::Exit)) {
+            error!("{}", e);
+        }
     }
 }
 
-fn setup_gui() -> Result<(ExtEventSink, EvRecv)> {
+async fn setup_gui() -> Result<(ExtEventSink, EvRecv)> {
     let (hs, hr) = unbounded();
     let (es, er) = unbounded::<GuiEvent>();
 
-    spawn(move || -> Result<()> {
-        let main_window = WindowDesc::new(build_root_widget)
-            .title("p2ptest")
-            .window_size((400.0, 400.0));
+    task::spawn(gui_task(es, hs)).await?;
 
-        let initial_state = HelloState::default();
-        let delegate = Delegate { ev_snd: es };
+    Ok((hr.recv().await?, er))
+}
 
-        let app_launcher = AppLauncher::with_window(main_window).delegate(delegate);
-        hs.send(app_launcher.get_external_handle())?;
-        app_launcher.launch(initial_state)?;
-        Ok(())
-    });
+async fn gui_task(es: EvSend, hs: Sender<ExtEventSink>) -> Result<()> {
+    let main_window = WindowDesc::new(build_root_widget)
+        .title("p2ptest")
+        .window_size((400.0, 400.0));
 
-    Ok((hr.recv()?, er))
+    let initial_state = HelloState::default();
+    let delegate = Delegate { ev_snd: es };
+
+    let app_launcher = AppLauncher::with_window(main_window).delegate(delegate);
+    task::block_on(hs.send(app_launcher.get_external_handle()))?;
+    app_launcher.launch(initial_state)?;
+    Ok(())
 }
 
 fn build_root_widget() -> impl Widget<HelloState> {
@@ -101,9 +111,7 @@ fn build_root_widget() -> impl Widget<HelloState> {
         .with_placeholder("Who are we greeting?")
         .fix_width(200.)
         .lens(HelloState::new_name);
-    let submit = Button::new("Submit").on_click(|ctx, _, _| {
-        ctx.submit_command(RENAMED)
-    });
+    let submit = Button::new("Submit").on_click(|ctx, _, _| ctx.submit_command(RENAMED));
 
     let layout = Flex::column()
         .with_child(label)
@@ -115,25 +123,27 @@ fn build_root_widget() -> impl Widget<HelloState> {
     Align::centered(layout)
 }
 
+enum Ev<T: Debug> {
+    Net(T),
+    Gui(GuiEvent),
+}
+
 pub async fn run<T>(swarm: &mut T) -> Result<()>
 where
     T: Stream + Unpin,
     <T as Stream>::Item: Debug,
 {
-    let (gui_handle, er) = setup_gui()?;
+    let (gui_handle, er) = setup_gui().await?;
+    let mut stream = er.map(|v| Ev::Gui(v)).merge(swarm.map(|v| Ev::Net(v)));
 
-    'main: loop {
-        if let Ok(gui_event) = er.try_recv() {
-            match dbg!(gui_event) {
-                GuiEvent::Rename(name) => {
-                    gui_handle.submit_command(RENAME, name, Target::Auto)?
-                },
-                GuiEvent::Exit => break 'main,
-            }
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ev::Net(net_event) => info!("{:?}", net_event),
+            Ev::Gui(gui_event) => match dbg!(gui_event) {
+                GuiEvent::Rename(name) => gui_handle.submit_command(RENAME, name, Target::Auto)?,
+                GuiEvent::Exit => break,
+            },
         }
-
-        let net_event = ready!(swarm.poll_next_unpin(cx));
-        info!("{:?}", net_event);
     }
 
     Ok(())

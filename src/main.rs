@@ -5,7 +5,6 @@ use libp2p::{
     gossipsub::{Gossipsub, GossipsubConfig, IdentTopic, MessageAuthenticity},
     identity, PeerId, Swarm,
 };
-use futures::future;
 
 #[cfg(feature = "gui")]
 mod gui;
@@ -17,7 +16,7 @@ fn main() -> Result<()> {
     let mut swarm = setup_p2p()?;
     p2p_addrs(&mut swarm)?;
 
-    task::block_on(future::poll_fn(|cx| run(cx, &mut swarm)))?;
+    task::block_on(run(&mut swarm))?;
 
     Ok(())
 }
