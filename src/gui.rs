@@ -1,14 +1,13 @@
 use anyhow::Result;
-use async_std::stream::StreamExt;
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use druid::{
     widget::{Align, Button, Flex, Label, TextBox},
     AppDelegate, AppLauncher, Command, Data, DelegateCtx, Env, ExtEventSink, Handled, Lens,
     Selector, Target, Widget, WidgetExt, WindowDesc, WindowId,
 };
-use futures::{stream, Stream};
+use futures::{Stream, StreamExt, ready};
 use log::info;
-use std::{fmt::Debug, thread::spawn};
+use std::{fmt::Debug, task::{Context, Poll}, thread::spawn};
 
 #[derive(Debug)]
 enum GuiEvent {
@@ -116,36 +115,26 @@ fn build_root_widget() -> impl Widget<HelloState> {
     Align::centered(layout)
 }
 
-#[derive(Debug)]
-enum Event<T: Debug> {
-    Net(T),
-    Gui(GuiEvent),
-}
-
 pub async fn run<T>(swarm: &mut T) -> Result<()>
 where
     T: Stream + Unpin,
     <T as Stream>::Item: Debug,
 {
     let (gui_handle, er) = setup_gui()?;
-    let gui_stream = stream::iter(er.try_iter());
-    // let mut stream = swarm
-    //     .map(|v| Event::Net(v))
-    //     .merge(gui_stream.map(|v| Event::Gui(v)));
-    let mut stream = gui_stream.map(|v| Event::<()>::Gui(v));
 
-        while let Some(ev) = stream.next().await {
-            dbg!(&ev);
-            match ev {
-                Event::Net(net_event) => info!("{:?}", net_event),
-                Event::Gui(gui_event) => match gui_event {
-                    GuiEvent::Rename(name) => {
-                        gui_handle.submit_command(RENAME, name, Target::Auto)?
-                    },
-                    GuiEvent::Exit => break,
+    'main: loop {
+        if let Ok(gui_event) = er.try_recv() {
+            match dbg!(gui_event) {
+                GuiEvent::Rename(name) => {
+                    gui_handle.submit_command(RENAME, name, Target::Auto)?
                 },
+                GuiEvent::Exit => break 'main,
             }
         }
 
-        Ok(())
+        let net_event = ready!(swarm.poll_next_unpin(cx));
+        info!("{:?}", net_event);
+    }
+
+    Ok(())
 }
