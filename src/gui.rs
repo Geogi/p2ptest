@@ -63,6 +63,7 @@ impl AppDelegate<HelloState> for Delegate {
             if let Err(e) = task::block_on(future) {
                 error!("{}", e);
             }
+            dbg!("lol");
             Handled::Yes
         } else {
             Handled::No
@@ -86,12 +87,12 @@ async fn setup_gui() -> Result<(ExtEventSink, EvRecv)> {
     let (hs, hr) = unbounded();
     let (es, er) = unbounded::<GuiEvent>();
 
-    task::spawn(gui_task(es, hs)).await?;
+    task::spawn_blocking(|| gui_task(es, hs)).await?;
 
     Ok((hr.recv().await?, er))
 }
 
-async fn gui_task(es: EvSend, hs: Sender<ExtEventSink>) -> Result<()> {
+fn gui_task(es: EvSend, hs: Sender<ExtEventSink>) -> Result<()> {
     let main_window = WindowDesc::new(build_root_widget)
         .title("p2ptest")
         .window_size((400.0, 400.0));
@@ -102,6 +103,7 @@ async fn gui_task(es: EvSend, hs: Sender<ExtEventSink>) -> Result<()> {
     let app_launcher = AppLauncher::with_window(main_window).delegate(delegate);
     task::block_on(hs.send(app_launcher.get_external_handle()))?;
     app_launcher.launch(initial_state)?;
+    dbg!("lel");
     Ok(())
 }
 
